@@ -1,0 +1,8 @@
+# Matches the starter notebook's defaults.
+name: default_sampling
+temperature: 0.6
+top_p: 0.95
+top_k: 20
+n_samples: 1
+repetition_penalty: 1.0
+min_p: 0.0

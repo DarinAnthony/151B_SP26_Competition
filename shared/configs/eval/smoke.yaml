@@ -1,0 +1,7 @@
+# 5-question smoke slice for pre-flight sanity. Same modality mix as the
+# starter notebook hits: id 0 free-form + id 1 MCQ within first 5.
+
+slice: smoke
+slice_indices: null
+max_tokens: 4096
+data_path: data/public.jsonl

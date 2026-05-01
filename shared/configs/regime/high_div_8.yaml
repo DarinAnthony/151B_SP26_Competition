@@ -1,0 +1,8 @@
+# For self-consistency: 8 high-temperature samples, majority-voted.
+name: high_div_8
+temperature: 0.8
+top_p: 0.95
+top_k: 40
+n_samples: 8
+repetition_penalty: 1.0
+min_p: 0.0

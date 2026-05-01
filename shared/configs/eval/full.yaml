@@ -1,0 +1,7 @@
+# Full 1,126-question public set. Roughly 11x the standard slice — use only
+# after pinning a winner on `standard`.
+
+slice: full
+slice_indices: null
+max_tokens: 4096
+data_path: data/public.jsonl

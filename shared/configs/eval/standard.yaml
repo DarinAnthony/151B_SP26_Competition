@@ -1,0 +1,7 @@
+# Cross-experiment frozen baseline. First 100 questions of data/public.jsonl.
+# All experiments report against this slice for apples-to-apples comparison.
+
+slice: default
+slice_indices: null
+max_tokens: 4096
+data_path: data/public.jsonl

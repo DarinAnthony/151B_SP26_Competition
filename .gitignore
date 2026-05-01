@@ -4,3 +4,19 @@ results
 data
 __pycache__
 LICENSE
+
+# Per-experiment run outputs
+experiments/*/results/**/*.jsonl
+experiments/*/notebooks/*.ipynb
+
+# Hydra
+outputs/
+multirun/
+
+# Build artifacts
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/

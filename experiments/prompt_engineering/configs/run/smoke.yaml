@@ -1,0 +1,6 @@
+# 5-question smoke run: baseline + force_early_boxed at the same token cap.
+# Pair with `eval=smoke` on the CLI.
+
+runs:
+  - prompt_id: baseline_starter
+  - prompt_id: force_early_boxed

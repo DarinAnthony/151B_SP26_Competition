@@ -1,0 +1,28 @@
+# Top-level Hydra config for the prompt-engineering experiment.
+# Override on the CLI: `python -m experiments.prompt_engineering.src.eval run=smoke eval=smoke`
+
+defaults:
+  - eval: standard           # shared/configs/eval/standard.yaml (first 100 q)
+  - regime: greedy           # shared/configs/regime/greedy.yaml
+  - run: default             # experiments/prompt_engineering/configs/run/default.yaml
+  - _self_
+
+results_dir: experiments/prompt_engineering/results
+run_name: null   # if null → "<run_group>_<UTC_timestamp>"; CLI override: run_name=my_label
+seed: 0
+
+hydra:
+  searchpath:
+    # Hydra needs to find the shared/configs/ groups at compose time.
+    - file://${oc.env:PWD}/shared/configs
+  run:
+    dir: .
+  output_subdir: null
+  job_logging:
+    version: 1
+    disable_existing_loggers: false
+    root: { handlers: [] }
+  hydra_logging:
+    version: 1
+    disable_existing_loggers: false
+    root: { handlers: [] }

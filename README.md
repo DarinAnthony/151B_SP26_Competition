@@ -4,17 +4,35 @@ Working repo for the CSE 151B Spring 2026 competition. Base model is **Qwen3-4B-
 
 ---
 
+## Quickstart
+
+End-to-end smoke test on a GPU node — should land at the first scored output without touching any experiment code.
+
+1. **Confirm GPU.** `nvidia-smi` must list a device. No GPU → stop here.
+2. **Open the starter notebook** at `starter/starter_code_cse151b_comp.ipynb` in Jupyter.
+3. **Run the install cell** (section 1). Uses `uv` to build `.venv/` with `vllm`, `transformers`, `bitsandbytes`, etc.
+4. **Restart the kernel,** then pick **"Python (cse151b)"** from the kernel dropdown.
+5. **Comment out the install cell** so subsequent restarts don't re-run it.
+6. **Pick one model-loading path** in section 5 and comment out the other:
+   - **vLLM (INT8 BnB)** — local / non-DataHub GPUs.
+   - **Transformers (INT4 BnB)** — UCSD DataHub (vLLM does not work there).
+   Apply the same choice to the matching generation cell in section 6.
+7. **Run sections 2 → 7** to generate, score, and save outputs.
+
+Hit a wall? See [Known issues](#known-issues) below — the GPU check, torch/CUDA mismatch, and DataHub-vs-vLLM are the usual suspects.
+
+---
+
 ## Workflow
 
 ### Repo layout
 
 | Path | Purpose |
 |---|---|
-| `starter_code_cse151b_comp.ipynb` | End-to-end pipeline: install → load model → generate → score → save |
-| `judger.py` | Scoring logic for free-form answers (symbolic + numeric equivalence) |
-| `utils.py` | Helpers used by the judger |
+| `starter/starter_code_cse151b_comp.ipynb` | End-to-end pipeline: install → load model → generate → score → save |
+| `starter/judger.py` | Scoring logic for free-form answers (symbolic + numeric equivalence) |
+| `starter/utils.py` | Helpers used by the judger |
 | `data/public.jsonl` | 1,126 questions with ground-truth answers |
-| `results/` | JSONL outputs from runs |
 | `experiments/` | One subfolder per research direction (see below) |
 
 ### Experiments
@@ -63,12 +81,14 @@ Every experiment reports against the same eval slice so numbers are comparable:
 
 ---
 
-## Running `starter_code_cse151b_comp.ipynb`
+## Running `starter/starter_code_cse151b_comp.ipynb`
+
+This is the long-form version of the [Quickstart](#quickstart) above, with the gotchas spelled out.
 
 ### First-time setup
 
 1. **Confirm you're on a GPU node before doing anything.** `nvidia-smi` should list a device. Without a GPU the model won't load and you'll waste time debugging install paths instead of the real issue.
-2. Open the notebook in Jupyter.
+2. Open `starter/starter_code_cse151b_comp.ipynb` in Jupyter.
 3. Run the **install cell** (section 1). It uses `uv` to create `.venv/` and install `vllm`, `transformers`, `bitsandbytes`, etc.
 4. **Make sure the install pulls an updated `torch`.** The default starter packages can resolve to a torch version that doesn't match your CUDA / vLLM combo and you'll get cryptic load errors. If anything fails after this step, check `python -c "import torch; print(torch.__version__, torch.cuda.is_available())"` first.
 5. **Restart the kernel** when the install finishes.
@@ -87,7 +107,7 @@ The same split applies to section 6 (generation): there are vLLM and Transformer
 
 ---
 
-## Known issues / things that bit us
+## Known issues
 
 These are the rough edges hit so far. Add to this list as new ones come up.
 
@@ -102,10 +122,3 @@ These are the rough edges hit so far. Add to this list as new ones come up.
     - Lower `temperature` / sampling determinism so the model stops branching.
     - Cap `MAX_TOKENS` lower and rely on a forced-answer fallback prompt for incomplete responses.
 - **Quantization choice matters for accuracy.** INT4 (Transformers path) trades accuracy for fitting on smaller GPUs. If your numbers look worse than expected, check whether the run was on INT4 vs. INT8/BF16 before blaming your method.
-
----
-
-## Submission
-
-- **Public set** (with ground truth, for local eval): keep `SAVE_EVAL = True` — output includes `gold` and `correct`.
-- **Private test set** (for leaderboard): set `SAVE_EVAL = False` — output is only `{id, is_mcq, response}`.

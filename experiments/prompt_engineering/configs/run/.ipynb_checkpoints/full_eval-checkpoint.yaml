@@ -1,0 +1,10 @@
+# Top-3 prompts on the full 1,126-question public set.
+# Pair with `eval=full` on the CLI. Pick the actual top-3 from the default-sweep
+# leaderboard before running this; the entries here are an initial guess.
+# All prompts share the same MAX_TOKENS for apples-to-apples scoring.
+
+runs:
+  - prompt_id: force_early_boxed
+  - prompt_id: cot_structured
+  - prompt_id: sc_diverse_paths
+    regime: high_div_8

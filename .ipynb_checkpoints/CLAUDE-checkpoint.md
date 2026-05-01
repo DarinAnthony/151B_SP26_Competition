@@ -43,7 +43,3 @@ Don't commit large outputs from notebooks.
 - **Output token limit:** **TBD** — tune once and pin across experiments. Starter currently sets `MAX_TOKENS = 32768`, which is too generous; a smaller cap is likely the right anchor.
 - **Metrics:** overall accuracy, MCQ accuracy, free-form accuracy.
 - Save run output to `experiments/<name>/results/<run_id>.jsonl` and link it from the writeup.
-
-## Code conventions
-
-- **No backwards-compatibility shims.** When renaming, removing, or refactoring code, update every call site in the same change. Do not leave behind aliases (`old_name = new_name`), re-exports, deprecated wrappers, "removed" comments, or transition flags. The repo has one consumer (this team); breaking changes are free. If a refactor would require a shim to ship, ship the breaking change instead.
