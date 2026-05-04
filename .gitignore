@@ -4,6 +4,7 @@ results
 data
 __pycache__
 LICENSE
+.ipynb_checkpoints/
 
 # Per-experiment run outputs
 experiments/*/results/**/*.jsonl

@@ -21,6 +21,7 @@ from shared.schemas import SamplingCfg
 MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
 MAX_MODEL_LEN = 16384
 GPU_ID = "0"
+MICRO_BATCH_SIZE = int(os.environ.get("RUNNER_MICRO_BATCH_SIZE", "25"))
 
 
 @dataclass
@@ -61,25 +62,11 @@ class _HFHandle(ModelHandle):
     ) -> list[GenerationOutput]:
         import torch
 
-        prompts = [
-            self.tokenizer.apply_chat_template(
-                msgs, tokenize=False, add_generation_prompt=True
-            )
-            for msgs in chat_messages
-        ]
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token is None:
             self.tokenizer.pad_token = self.tokenizer.eos_token
 
         device = next(self.model.parameters()).device
-        inputs = self.tokenizer(
-            prompts,
-            return_tensors="pt",
-            padding=True,
-            truncation=True,
-            max_length=MAX_MODEL_LEN,
-        ).to(device)
-        prompt_len = inputs["input_ids"].shape[1]
 
         gen_kwargs: dict[str, Any] = dict(
             max_new_tokens=max_tokens,
@@ -95,20 +82,44 @@ class _HFHandle(ModelHandle):
             if sampling.top_k > 0:
                 gen_kwargs["top_k"] = sampling.top_k
 
-        results: list[GenerationOutput] = []
         # Loop n_samples (HF doesn't accept `n=` like vLLM); usually n=1.
-        per_sample_outputs: list[list[str]] = [[] for _ in prompts]
-        per_sample_token_counts: list[list[int]] = [[] for _ in prompts]
-        for _ in range(max(1, sampling.n_samples)):
-            with torch.no_grad():
-                output_ids = self.model.generate(**inputs, **gen_kwargs)
-            for i, out in enumerate(output_ids):
-                new_tokens = out[prompt_len:]
-                text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-                per_sample_outputs[i].append(text)
-                per_sample_token_counts[i].append(int(new_tokens.shape[0]))
+        per_sample_outputs: list[list[str]] = [[] for _ in chat_messages]
+        per_sample_token_counts: list[list[int]] = [[] for _ in chat_messages]
 
-        for i in range(len(prompts)):
+        # Chunk to bound peak GPU memory: a 100-item batch with max_new_tokens=4096
+        # produces a KV cache too large for an 11 GB card. Tunable via env var.
+        for chunk_start in range(0, len(chat_messages), MICRO_BATCH_SIZE):
+            chunk = chat_messages[chunk_start:chunk_start + MICRO_BATCH_SIZE]
+            prompts = [
+                self.tokenizer.apply_chat_template(
+                    msgs, tokenize=False, add_generation_prompt=True
+                )
+                for msgs in chunk
+            ]
+            inputs = self.tokenizer(
+                prompts,
+                return_tensors="pt",
+                padding=True,
+                truncation=True,
+                max_length=MAX_MODEL_LEN,
+            ).to(device)
+            prompt_len = inputs["input_ids"].shape[1]
+
+            for _ in range(max(1, sampling.n_samples)):
+                with torch.no_grad():
+                    output_ids = self.model.generate(**inputs, **gen_kwargs)
+                for j, out in enumerate(output_ids):
+                    new_tokens = out[prompt_len:]
+                    text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+                    per_sample_outputs[chunk_start + j].append(text)
+                    per_sample_token_counts[chunk_start + j].append(int(new_tokens.shape[0]))
+                del output_ids
+
+            del inputs
+            torch.cuda.empty_cache()
+
+        results: list[GenerationOutput] = []
+        for i in range(len(chat_messages)):
             results.append(
                 GenerationOutput(
                     responses=per_sample_outputs[i],
