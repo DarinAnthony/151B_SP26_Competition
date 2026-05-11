@@ -37,6 +37,7 @@ from shared.schemas import (  # noqa: E402
     register_configs,
 )
 from shared.scoring import score_one  # noqa: E402
+from shared.telemetry import Timer, TimingsRegistry, use_registry  # noqa: E402
 from shared.voting import vote_index  # noqa: E402
 
 from experiments.prompt_engineering.src.prompts import PROMPTS  # noqa: E402
@@ -100,7 +101,8 @@ def _run_single(
     max_tokens: int,
 ) -> list[dict]:
     """Returns per-item dicts: {response, all_responses?, n_iters, n_response_tokens}."""
-    chat_messages = [build_chat_messages(item, prompt) for item in items]
+    with Timer("build_chat_messages"):
+        chat_messages = [build_chat_messages(item, prompt) for item in items]
     outputs = handle.generate_batch(chat_messages, sampling, max_tokens)
     rows: list[dict] = []
     for out in outputs:
@@ -122,7 +124,8 @@ def _run_self_consistency(
     sampling: SamplingCfg,
     max_tokens: int,
 ) -> list[dict]:
-    chat_messages = [build_chat_messages(item, prompt) for item in items]
+    with Timer("build_chat_messages"):
+        chat_messages = [build_chat_messages(item, prompt) for item in items]
     outputs = handle.generate_batch(chat_messages, sampling, max_tokens)
     rows: list[dict] = []
     for item, out in zip(items, outputs):
@@ -340,8 +343,11 @@ def main(cfg: DictConfig) -> None:
             continue
         _confirm_long_run(items, sampling, max_tokens, prompt.id)
 
+    run_registry = TimingsRegistry()
+
     print(f"Loading model: {MODEL_ID}")
-    handle = load_model()
+    with use_registry(run_registry):
+        handle = load_model()
     print("Model loaded.")
 
     leaderboard_rows: list[dict] = []
@@ -354,12 +360,16 @@ def main(cfg: DictConfig) -> None:
             f"\n→ {prompt.id} ({prompt.kind}, regime={sampling.name}, "
             f"max_tokens={max_tokens}, n_samples={sampling.n_samples})"
         )
+        prompt_registry = TimingsRegistry()
         t0 = time.time()
-        gen_rows = runner_fn(prompt, items, handle, sampling, max_tokens)
+        with use_registry(prompt_registry):
+            with Timer("generate.dispatch"):
+                gen_rows = runner_fn(prompt, items, handle, sampling, max_tokens)
+            with Timer("score_and_save"):
+                leaderboard = _score_and_save(
+                    prompt, items, gen_rows, sampling, max_tokens, handle, invocation_results_dir
+                )
         elapsed = time.time() - t0
-        leaderboard = _score_and_save(
-            prompt, items, gen_rows, sampling, max_tokens, handle, invocation_results_dir
-        )
         leaderboard_rows.append(leaderboard)
         print(
             f"   acc={leaderboard['overall_acc']*100:.1f}% "
@@ -369,8 +379,11 @@ def main(cfg: DictConfig) -> None:
             f"wall={elapsed:.1f}s "
             f"→ {leaderboard['out_path']}"
         )
+        print(prompt_registry.render_table(f"timings — {prompt.id}"))
+        run_registry.merge(prompt_registry)
 
     _print_leaderboard(leaderboard_rows, eval_cfg.slice, eval_cfg.max_tokens)
+    print(run_registry.render_table("timings — full run"))
 
 
 if __name__ == "__main__":

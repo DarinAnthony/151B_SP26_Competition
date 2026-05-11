@@ -17,6 +17,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from shared.schemas import SamplingCfg
+from shared.telemetry import Timer
 
 MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
 MAX_MODEL_LEN = 16384
@@ -88,35 +89,39 @@ class _HFHandle(ModelHandle):
 
         # Chunk to bound peak GPU memory: a 100-item batch with max_new_tokens=4096
         # produces a KV cache too large for an 11 GB card. Tunable via env var.
-        for chunk_start in range(0, len(chat_messages), MICRO_BATCH_SIZE):
-            chunk = chat_messages[chunk_start:chunk_start + MICRO_BATCH_SIZE]
-            prompts = [
-                self.tokenizer.apply_chat_template(
-                    msgs, tokenize=False, add_generation_prompt=True
-                )
-                for msgs in chunk
-            ]
-            inputs = self.tokenizer(
-                prompts,
-                return_tensors="pt",
-                padding=True,
-                truncation=True,
-                max_length=MAX_MODEL_LEN,
-            ).to(device)
-            prompt_len = inputs["input_ids"].shape[1]
+        with Timer("generate.total", cuda_sync=True):
+            for chunk_start in range(0, len(chat_messages), MICRO_BATCH_SIZE):
+                chunk = chat_messages[chunk_start:chunk_start + MICRO_BATCH_SIZE]
+                with Timer("generate.tokenize"):
+                    prompts = [
+                        self.tokenizer.apply_chat_template(
+                            msgs, tokenize=False, add_generation_prompt=True
+                        )
+                        for msgs in chunk
+                    ]
+                    inputs = self.tokenizer(
+                        prompts,
+                        return_tensors="pt",
+                        padding=True,
+                        truncation=True,
+                        max_length=MAX_MODEL_LEN,
+                    ).to(device)
+                    prompt_len = inputs["input_ids"].shape[1]
 
-            for _ in range(max(1, sampling.n_samples)):
-                with torch.no_grad():
-                    output_ids = self.model.generate(**inputs, **gen_kwargs)
-                for j, out in enumerate(output_ids):
-                    new_tokens = out[prompt_len:]
-                    text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-                    per_sample_outputs[chunk_start + j].append(text)
-                    per_sample_token_counts[chunk_start + j].append(int(new_tokens.shape[0]))
-                del output_ids
+                for _ in range(max(1, sampling.n_samples)):
+                    with Timer("generate.forward", cuda_sync=True):
+                        with torch.no_grad():
+                            output_ids = self.model.generate(**inputs, **gen_kwargs)
+                    with Timer("generate.decode"):
+                        for j, out in enumerate(output_ids):
+                            new_tokens = out[prompt_len:]
+                            text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+                            per_sample_outputs[chunk_start + j].append(text)
+                            per_sample_token_counts[chunk_start + j].append(int(new_tokens.shape[0]))
+                    del output_ids
 
-            del inputs
-            torch.cuda.empty_cache()
+                del inputs
+                torch.cuda.empty_cache()
 
         results: list[GenerationOutput] = []
         for i in range(len(chat_messages)):
@@ -133,22 +138,23 @@ def load_model() -> ModelHandle:
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
-    os.environ.setdefault("CUDA_VISIBLE_DEVICES", GPU_ID)
+    with Timer("model.load"):
+        os.environ.setdefault("CUDA_VISIBLE_DEVICES", GPU_ID)
 
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-    if tokenizer.pad_token is None:
-        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
 
-    bnb_config = BitsAndBytesConfig(
-        load_in_4bit=True,
-        bnb_4bit_compute_dtype=torch.bfloat16,
-        bnb_4bit_use_double_quant=True,
-    )
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID,
-        trust_remote_code=True,
-        quantization_config=bnb_config,
-        device_map="auto",
-    )
-    model.eval()
-    return _HFHandle(model=model, tokenizer=tokenizer)
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+            bnb_4bit_use_double_quant=True,
+        )
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_ID,
+            trust_remote_code=True,
+            quantization_config=bnb_config,
+            device_map="auto",
+        )
+        model.eval()
+        return _HFHandle(model=model, tokenizer=tokenizer)

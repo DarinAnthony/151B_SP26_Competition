@@ -15,7 +15,7 @@ from shared.schemas import EvalSliceCfg
 
 _SLICE_RANGES: dict[str, tuple[int, int] | None] = {
     "smoke": (0, 5),
-    "default": (0, 50),
+    "default": (0, 100),
     "full": None,
 }
 
