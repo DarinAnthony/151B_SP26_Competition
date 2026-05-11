@@ -14,8 +14,10 @@ seed: 0
 
 hydra:
   searchpath:
-    # Hydra needs to find the shared/configs/ groups at compose time.
-    - file://${oc.env:PWD}/shared/configs
+    # Hydra needs to find the shared/configs/ groups at compose time. REPO_ROOT
+    # is set by eval.py from __file__ so this works regardless of the user's
+    # cwd (PWD-based interpolation broke on Colab where PWD=/content).
+    - file://${oc.env:REPO_ROOT}/shared/configs
   run:
     dir: .
   output_subdir: null

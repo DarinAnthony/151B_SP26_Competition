@@ -18,11 +18,16 @@ import hydra
 from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig, OmegaConf
 
+import os
+
 # Make the repo root importable so `shared.*` resolves whether we're run as a
-# module or as a script.
+# module or as a script. Also export REPO_ROOT for the Hydra `searchpath`
+# interpolation in config.yaml — derived from the file location so it works
+# regardless of the user's cwd (e.g. Colab running from /content).
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
+os.environ.setdefault("REPO_ROOT", str(_REPO_ROOT))
 
 from shared.data import load_eval_slice  # noqa: E402
 from shared.io import ResultRow, save_jsonl  # noqa: E402
