@@ -33,6 +33,7 @@ from shared.runner import MODEL_ID, ModelHandle, load_model  # noqa: E402
 from shared.schemas import (  # noqa: E402
     EvalSliceCfg,
     PromptRunEntryCfg,
+    RunnerCfg,
     SamplingCfg,
     register_configs,
 )
@@ -315,6 +316,7 @@ def main(cfg: DictConfig) -> None:
 
     eval_cfg: EvalSliceCfg = _typed(cfg.eval, EvalSliceCfg)  # type: ignore[assignment]
     default_regime: SamplingCfg = _typed(cfg.regime, SamplingCfg)  # type: ignore[assignment]
+    runner_cfg: RunnerCfg = _typed(cfg.runner, RunnerCfg)  # type: ignore[assignment]
     runs: list[PromptRunEntryCfg] = [_typed(e, PromptRunEntryCfg) for e in cfg.run.runs]
 
     if cfg.get("run_name"):
@@ -345,9 +347,9 @@ def main(cfg: DictConfig) -> None:
 
     run_registry = TimingsRegistry()
 
-    print(f"Loading model: {MODEL_ID}")
+    print(f"Loading model: {MODEL_ID} (engine={runner_cfg.engine}, quant={runner_cfg.quant})")
     with use_registry(run_registry):
-        handle = load_model()
+        handle = load_model(runner_cfg)
     print("Model loaded.")
 
     leaderboard_rows: list[dict] = []

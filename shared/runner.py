@@ -1,23 +1,30 @@
-"""Model loader + batched generator (Transformers + bitsandbytes).
+"""Model loader + batched generator.
 
-Single hardcoded model: Qwen3-4B-Thinking-2507 on GPU 0. We deliberately do not
-use `lightning.fabric.Fabric` — for pure inference with `device_map="auto"`,
-Fabric's `launch()` spawns worker processes that grab GPU memory and don't
-release it on failure (saw 17 zombie workers holding 21 GB after a crash).
+Two engines behind a common `ModelHandle` interface:
+- `_VLLMHandle` (default): vLLM continuous batching, prefix caching, single
+  scheduler call per `generate_batch`.
+- `_HFHandle` (fallback): Transformers + bitsandbytes-4bit, manual micro-batch
+  chunking. Selected when vLLM load fails or when `engine=hf` is requested.
+  We deliberately avoid `lightning.fabric.Fabric` here — for pure inference with
+  `device_map="auto"`, Fabric's `launch()` spawns worker processes that grab GPU
+  memory and don't release it on failure.
 
-Model-load code is lifted from `starter_code_cse151b_comp.ipynb` cell `3d43b572`
-and generation from cell `68bad2c0`.
+HF model-load code is lifted from `starter_code_cse151b_comp.ipynb` cell
+`3d43b572` and generation from cell `68bad2c0`.
 """
 
 from __future__ import annotations
 
+import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
 
-from shared.schemas import SamplingCfg
+from shared.schemas import RunnerCfg, SamplingCfg
 from shared.telemetry import Timer
+
+logger = logging.getLogger(__name__)
 
 MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
 MAX_MODEL_LEN = 16384
@@ -134,27 +141,130 @@ class _HFHandle(ModelHandle):
         return results
 
 
-def load_model() -> ModelHandle:
+class _VLLMHandle(ModelHandle):
+    """vLLM-backed handle. Single `llm.generate(...)` call per batch — vLLM's
+    scheduler does continuous batching across items and across the `n` samples
+    in `SamplingParams`, sharing prefill KV.
+    """
+
+    def __init__(self, llm: Any):
+        self.llm = llm
+        self.tokenizer = llm.get_tokenizer()
+
+    def generate_batch(
+        self,
+        chat_messages: list[list[dict]],
+        sampling: SamplingCfg,
+        max_tokens: int,
+    ) -> list[GenerationOutput]:
+        from vllm import SamplingParams
+
+        with Timer("generate.tokenize"):
+            prompts = [
+                self.tokenizer.apply_chat_template(
+                    msgs, tokenize=False, add_generation_prompt=True
+                )
+                for msgs in chat_messages
+            ]
+
+        sp_kwargs: dict[str, Any] = dict(
+            n=max(1, sampling.n_samples),
+            max_tokens=max_tokens,
+            repetition_penalty=sampling.repetition_penalty,
+        )
+        if sampling.temperature <= 0.0:
+            sp_kwargs["temperature"] = 0.0
+        else:
+            sp_kwargs["temperature"] = sampling.temperature
+            sp_kwargs["top_p"] = sampling.top_p
+            if sampling.top_k > 0:
+                sp_kwargs["top_k"] = sampling.top_k
+        sp = SamplingParams(**sp_kwargs)
+
+        with Timer("generate.vllm"):
+            outputs = self.llm.generate(prompts, sp, use_tqdm=False)
+
+        results: list[GenerationOutput] = []
+        for out in outputs:
+            responses = [c.text for c in out.outputs]
+            tokens = [len(c.token_ids) for c in out.outputs]
+            results.append(GenerationOutput(responses=responses, n_response_tokens=tokens))
+        return results
+
+
+def _load_vllm(quant: str) -> ModelHandle:
+    from vllm import LLM
+
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", GPU_ID)
+
+    common: dict[str, Any] = dict(
+        model=MODEL_ID,
+        max_model_len=MAX_MODEL_LEN,
+        gpu_memory_utilization=0.9,
+        enable_prefix_caching=True,
+        trust_remote_code=True,
+    )
+    if quant == "bf16":
+        common["dtype"] = "bfloat16"
+    elif quant == "bnb":
+        common["quantization"] = "bitsandbytes"
+        common["load_format"] = "bitsandbytes"
+    else:
+        raise ValueError(f"Unknown quant {quant!r} for vLLM; valid: 'bf16', 'bnb'")
+
+    llm = LLM(**common)
+    return _VLLMHandle(llm=llm)
+
+
+def _load_hf(quant: str) -> ModelHandle:
+    if quant != "bnb":
+        raise ValueError(
+            f"HF path only supports quant='bnb' in this codebase (got {quant!r}). "
+            "Use engine='vllm' for bf16."
+        )
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
+    os.environ.setdefault("CUDA_VISIBLE_DEVICES", GPU_ID)
+
+    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.bfloat16,
+        bnb_4bit_use_double_quant=True,
+    )
+    model = AutoModelForCausalLM.from_pretrained(
+        MODEL_ID,
+        trust_remote_code=True,
+        quantization_config=bnb_config,
+        device_map="auto",
+    )
+    model.eval()
+    return _HFHandle(model=model, tokenizer=tokenizer)
+
+
+def load_model(cfg: RunnerCfg) -> ModelHandle:
+    """Top-level dispatcher.
+
+    `engine='vllm'` tries vLLM first; on any load-time exception falls back to
+    HF + bnb-4bit (overriding the requested quant) with a warning. `engine='hf'`
+    forces the HF path and validates `quant` accordingly.
+    """
     with Timer("model.load"):
-        os.environ.setdefault("CUDA_VISIBLE_DEVICES", GPU_ID)
-
-        tokenizer = AutoTokenizer.from_pretrained(MODEL_ID, trust_remote_code=True)
-        if tokenizer.pad_token is None:
-            tokenizer.pad_token = tokenizer.eos_token
-
-        bnb_config = BitsAndBytesConfig(
-            load_in_4bit=True,
-            bnb_4bit_compute_dtype=torch.bfloat16,
-            bnb_4bit_use_double_quant=True,
-        )
-        model = AutoModelForCausalLM.from_pretrained(
-            MODEL_ID,
-            trust_remote_code=True,
-            quantization_config=bnb_config,
-            device_map="auto",
-        )
-        model.eval()
-        return _HFHandle(model=model, tokenizer=tokenizer)
+        if cfg.engine == "vllm":
+            try:
+                return _load_vllm(cfg.quant)
+            except Exception as e:
+                logger.warning(
+                    "vLLM load failed (%s: %s). Falling back to HF Transformers + bnb-4bit. "
+                    "Requested quant=%r is being overridden to 'bnb' for the fallback path.",
+                    type(e).__name__, e, cfg.quant,
+                )
+                return _load_hf("bnb")
+        elif cfg.engine == "hf":
+            return _load_hf(cfg.quant)
+        else:
+            raise ValueError(f"Unknown engine {cfg.engine!r}; valid: 'vllm', 'hf'")

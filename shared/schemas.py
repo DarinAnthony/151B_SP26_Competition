@@ -32,6 +32,12 @@ class SamplingCfg:
 
 
 @dataclass
+class RunnerCfg:
+    engine: str = "vllm"   # one of: "vllm", "hf"
+    quant: str = "bf16"    # one of: "bf16", "bnb"
+
+
+@dataclass
 class PromptRunEntryCfg:
     prompt_id: str = MISSING
     regime: Optional[str] = None
@@ -63,3 +69,4 @@ def register_configs() -> None:
     cs.store(group="eval", name="base_eval_cfg", node=EvalSliceCfg)
     cs.store(group="regime", name="base_regime_cfg", node=SamplingCfg)
     cs.store(group="run", name="base_run_group_cfg", node=RunGroupCfg)
+    cs.store(group="runner", name="base_runner_cfg", node=RunnerCfg)
