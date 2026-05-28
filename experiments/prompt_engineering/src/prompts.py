@@ -39,14 +39,14 @@ COT_STRUCTURED = Prompt(
         "Plan: one-line strategy.\n"
         "Compute: do the math (this is the only place where work is shown; keep it terse).\n"
         "Verify: one sanity check.\n"
-        "Answer: \\boxed{...}.\n"
-        "If the problem has multiple sub-answers, put them comma-separated inside one \\boxed{}, "
-        "e.g. \\boxed{3, 7}."
+        "Answer: put ALL final answers inside ONE \\boxed{}. "
+        "Single answer: \\boxed{42}. "
+        "Multiple sub-answers, comma-separated: \\boxed{3, 7}."
     ),
     system_mcq=(
         "You are an expert mathematician. Solve in five short sections — Parse, Plan, "
-        "Compute, Verify, Answer — and put only the letter inside \\boxed{} on the Answer "
-        "line, e.g. \\boxed{C}."
+        "Compute, Verify, Answer — and on the Answer line write ONLY the letter inside "
+        "\\boxed{}, e.g. Answer: \\boxed{C}."
     ),
 )
 

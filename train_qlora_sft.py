@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import re
 from pathlib import Path
 from typing import Any
 
@@ -138,7 +139,48 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval_steps", type=int, default=100)
     parser.add_argument("--save_steps", type=int, default=100)
     parser.add_argument("--logging_steps", type=int, default=10)
+    parser.add_argument(
+        "--resume_from_checkpoint",
+        nargs="?",
+        const="auto",
+        default=None,
+        help=(
+            "Resume Trainer state from a checkpoint path. If passed without a "
+            "value, uses the latest checkpoint-* under --output_dir."
+        ),
+    )
     return parser.parse_args()
+
+
+def latest_checkpoint(output_dir: Path) -> Path | None:
+    checkpoints: list[tuple[int, Path]] = []
+    for path in output_dir.glob("checkpoint-*"):
+        if not path.is_dir():
+            continue
+        match = re.fullmatch(r"checkpoint-(\d+)", path.name)
+        if match:
+            checkpoints.append((int(match.group(1)), path))
+    if not checkpoints:
+        return None
+    return max(checkpoints, key=lambda item: item[0])[1]
+
+
+def resolve_resume_checkpoint(args: argparse.Namespace) -> str | None:
+    if args.resume_from_checkpoint is None:
+        return None
+    if args.resume_from_checkpoint != "auto":
+        checkpoint = Path(args.resume_from_checkpoint).expanduser()
+        if not checkpoint.exists():
+            raise FileNotFoundError(f"Checkpoint does not exist: {checkpoint}")
+        return str(checkpoint)
+
+    checkpoint = latest_checkpoint(Path(args.output_dir))
+    if checkpoint is None:
+        raise FileNotFoundError(
+            f"No checkpoint-* directory found under {args.output_dir}; "
+            "cannot resume automatically."
+        )
+    return str(checkpoint)
 
 
 def make_training_args(args: argparse.Namespace, bf16: bool) -> Any:
@@ -246,7 +288,10 @@ def main() -> None:
         trainer_kwargs["tokenizer"] = tokenizer
 
     trainer = Trainer(**trainer_kwargs)
-    trainer.train()
+    resume_checkpoint = resolve_resume_checkpoint(args)
+    if resume_checkpoint:
+        print(f"Resuming training from {resume_checkpoint}")
+    trainer.train(resume_from_checkpoint=resume_checkpoint)
 
     final_adapter_dir.mkdir(parents=True, exist_ok=True)
     trainer.model.save_pretrained(final_adapter_dir)

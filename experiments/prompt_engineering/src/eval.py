@@ -497,6 +497,9 @@ def main(cfg: DictConfig) -> None:
         merged = OmegaConf.merge(OmegaConf.structured(schema), node)
         return OmegaConf.to_object(merged)
 
+    if cfg.get("prompt_id") is not None:
+        OmegaConf.update(cfg, "run.runs", [{"prompt_id": cfg.prompt_id}], merge=False)
+
     eval_cfg: EvalSliceCfg = _typed(cfg.eval, EvalSliceCfg)  # type: ignore[assignment]
     default_regime: SamplingCfg = _typed(cfg.regime, SamplingCfg)  # type: ignore[assignment]
     runner_cfg: RunnerCfg = _typed(cfg.runner, RunnerCfg)  # type: ignore[assignment]
