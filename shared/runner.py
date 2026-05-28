@@ -31,6 +31,11 @@ ADAPTER_PATH = os.environ.get("ADAPTER_PATH", "")
 MAX_MODEL_LEN = 16384
 GPU_ID = "0"
 MICRO_BATCH_SIZE = int(os.environ.get("RUNNER_MICRO_BATCH_SIZE", "25"))
+PARALLEL_SAMPLES = os.environ.get("RUNNER_PARALLEL_SAMPLES", "0").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 
 @dataclass
@@ -70,6 +75,7 @@ class _HFHandle(ModelHandle):
         max_tokens: int,
     ) -> list[GenerationOutput]:
         import torch
+        from tqdm.auto import tqdm
 
         self.tokenizer.padding_side = "left"
         if self.tokenizer.pad_token is None:
@@ -97,7 +103,16 @@ class _HFHandle(ModelHandle):
 
         # Chunk to bound peak GPU memory: a 100-item batch with max_new_tokens=4096
         # produces a KV cache too large for an 11 GB card. Tunable via env var.
+        n_samples = max(1, sampling.n_samples)
+        n_chunks = (len(chat_messages) + MICRO_BATCH_SIZE - 1) // MICRO_BATCH_SIZE
+        parallel_samples = PARALLEL_SAMPLES and gen_kwargs.get("do_sample", False) and n_samples > 1
         with Timer("generate.total", cuda_sync=True):
+            progress = tqdm(
+                total=n_chunks if parallel_samples else n_chunks * n_samples,
+                desc=f"HF generate ({len(chat_messages)} prompts x {n_samples} samples)",
+                unit="sample-batch",
+                dynamic_ncols=True,
+            )
             for chunk_start in range(0, len(chat_messages), MICRO_BATCH_SIZE):
                 chunk = chat_messages[chunk_start:chunk_start + MICRO_BATCH_SIZE]
                 with Timer("generate.tokenize"):
@@ -116,20 +131,45 @@ class _HFHandle(ModelHandle):
                     ).to(device)
                     prompt_len = inputs["input_ids"].shape[1]
 
-                for _ in range(max(1, sampling.n_samples)):
+                if parallel_samples:
                     with Timer("generate.forward", cuda_sync=True):
                         with torch.no_grad():
-                            output_ids = self.model.generate(**inputs, **gen_kwargs)
+                            output_ids = self.model.generate(
+                                **inputs,
+                                **gen_kwargs,
+                                num_return_sequences=n_samples,
+                            )
                     with Timer("generate.decode"):
-                        for j, out in enumerate(output_ids):
-                            new_tokens = out[prompt_len:]
-                            text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
-                            per_sample_outputs[chunk_start + j].append(text)
-                            per_sample_token_counts[chunk_start + j].append(int(new_tokens.shape[0]))
+                        for j in range(len(chunk)):
+                            for sample_idx in range(n_samples):
+                                out = output_ids[j * n_samples + sample_idx]
+                                new_tokens = out[prompt_len:]
+                                text = self.tokenizer.decode(
+                                    new_tokens, skip_special_tokens=True
+                                ).strip()
+                                per_sample_outputs[chunk_start + j].append(text)
+                                per_sample_token_counts[chunk_start + j].append(
+                                    int(new_tokens.shape[0])
+                                )
                     del output_ids
+                    progress.update(1)
+                else:
+                    for _ in range(n_samples):
+                        with Timer("generate.forward", cuda_sync=True):
+                            with torch.no_grad():
+                                output_ids = self.model.generate(**inputs, **gen_kwargs)
+                        with Timer("generate.decode"):
+                            for j, out in enumerate(output_ids):
+                                new_tokens = out[prompt_len:]
+                                text = self.tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+                                per_sample_outputs[chunk_start + j].append(text)
+                                per_sample_token_counts[chunk_start + j].append(int(new_tokens.shape[0]))
+                        del output_ids
+                        progress.update(1)
 
                 del inputs
                 torch.cuda.empty_cache()
+            progress.close()
 
         results: list[GenerationOutput] = []
         for i in range(len(chat_messages)):

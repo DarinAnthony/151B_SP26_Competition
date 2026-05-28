@@ -29,6 +29,7 @@ dependencies = [
     "accelerate",
     "peft",
     "pyyaml",
+    "wandb",
     # Utilities
     "tqdm",
 ]
