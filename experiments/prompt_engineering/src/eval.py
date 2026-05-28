@@ -36,7 +36,7 @@ from shared.io import ResultRow, save_jsonl  # noqa: E402
 from shared.multi_turn import run_php, run_self_refine  # noqa: E402
 from shared.prompt_format import build_chat_messages  # noqa: E402
 from shared.prompts import Prompt  # noqa: E402
-from shared.runner import ADAPTER_PATH, MODEL_ID, ModelHandle, load_model  # noqa: E402
+from shared.runner import MODEL_ID, ModelHandle, load_model, resolve_adapter_path  # noqa: E402
 from shared.schemas import (  # noqa: E402
     EvalSliceCfg,
     PromptRunEntryCfg,
@@ -361,7 +361,13 @@ def _write_metrics_files(
             writer.writerow({k: _json_safe(row.get(k)) for k in fieldnames})
 
 
-def _init_wandb(cfg: DictConfig, eval_cfg: EvalSliceCfg, runner_cfg: RunnerCfg, run_dir_name: str):
+def _init_wandb(
+    cfg: DictConfig,
+    eval_cfg: EvalSliceCfg,
+    runner_cfg: RunnerCfg,
+    run_dir_name: str,
+    adapter_path: str,
+):
     project = os.environ.get("WANDB_PROJECT")
     if not project:
         print("W&B logging disabled: WANDB_PROJECT is not set.")
@@ -385,7 +391,7 @@ def _init_wandb(cfg: DictConfig, eval_cfg: EvalSliceCfg, runner_cfg: RunnerCfg, 
             {
                 "run_name": run_dir_name,
                 "model_id": MODEL_ID,
-                "adapter_path": ADAPTER_PATH or None,
+                "adapter_path": adapter_path or None,
                 "eval": OmegaConf.to_container(cfg.eval, resolve=True),
                 "runner": OmegaConf.to_container(cfg.runner, resolve=True),
                 "run": OmegaConf.to_container(cfg.run, resolve=True),
@@ -494,6 +500,7 @@ def main(cfg: DictConfig) -> None:
     eval_cfg: EvalSliceCfg = _typed(cfg.eval, EvalSliceCfg)  # type: ignore[assignment]
     default_regime: SamplingCfg = _typed(cfg.regime, SamplingCfg)  # type: ignore[assignment]
     runner_cfg: RunnerCfg = _typed(cfg.runner, RunnerCfg)  # type: ignore[assignment]
+    adapter_path = resolve_adapter_path(runner_cfg)
     runs: list[PromptRunEntryCfg] = [_typed(e, PromptRunEntryCfg) for e in cfg.run.runs]
 
     if cfg.get("run_name"):
@@ -530,9 +537,13 @@ def main(cfg: DictConfig) -> None:
         _confirm_long_run(items, sampling, max_tokens, prompt.id)
 
     run_registry = TimingsRegistry()
-    wandb_run = _init_wandb(cfg, eval_cfg, runner_cfg, run_dir_name)
+    wandb_run = _init_wandb(cfg, eval_cfg, runner_cfg, run_dir_name, adapter_path)
 
-    print(f"Loading model: {MODEL_ID} (engine={runner_cfg.engine}, quant={runner_cfg.quant})")
+    adapter_msg = f", adapter={adapter_path}" if adapter_path else ""
+    print(
+        f"Loading model: {MODEL_ID} "
+        f"(engine={runner_cfg.engine}, quant={runner_cfg.quant}{adapter_msg})"
+    )
     with use_registry(run_registry):
         handle = load_model(runner_cfg)
     print("Model loaded.")
@@ -581,7 +592,7 @@ def main(cfg: DictConfig) -> None:
                 eval_cfg=eval_cfg,
                 runner_cfg=runner_cfg,
                 model_id=MODEL_ID,
-                adapter_path=ADAPTER_PATH,
+                adapter_path=adapter_path,
             )
 
     _print_leaderboard(leaderboard_rows, eval_cfg.slice, eval_cfg.max_tokens)
@@ -597,7 +608,7 @@ def main(cfg: DictConfig) -> None:
             eval_cfg=eval_cfg,
             runner_cfg=runner_cfg,
             model_id=MODEL_ID,
-            adapter_path=ADAPTER_PATH,
+            adapter_path=adapter_path,
         )
     _finish_wandb(wandb_run, leaderboard_rows, metrics_dirs)
 

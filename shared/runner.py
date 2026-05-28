@@ -15,10 +15,13 @@ HF model-load code is lifted from `starter_code_cse151b_comp.ipynb` cell
 
 from __future__ import annotations
 
+import inspect
+import json
 import logging
 import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from shared.schemas import RunnerCfg, SamplingCfg
@@ -36,6 +39,55 @@ PARALLEL_SAMPLES = os.environ.get("RUNNER_PARALLEL_SAMPLES", "0").lower() in {
     "true",
     "yes",
 }
+ADAPTER_NAME = "sft_adapter"
+ADAPTER_ID = 1
+
+
+def resolve_adapter_path(cfg: RunnerCfg | None = None) -> str:
+    """Return the adapter path from config, falling back to ADAPTER_PATH."""
+    if cfg is not None and cfg.adapter_path:
+        return cfg.adapter_path
+    return ADAPTER_PATH
+
+
+def _validate_adapter_path(adapter_path: str) -> Path:
+    path = Path(adapter_path).expanduser()
+    if not path.exists():
+        raise FileNotFoundError(f"LoRA adapter path does not exist: {path}")
+    if not (path / "adapter_config.json").exists():
+        raise FileNotFoundError(f"Missing adapter_config.json under LoRA adapter path: {path}")
+    if not ((path / "adapter_model.safetensors").exists() or (path / "adapter_model.bin").exists()):
+        raise FileNotFoundError(
+            f"Missing adapter weights under LoRA adapter path: {path} "
+            "(expected adapter_model.safetensors or adapter_model.bin)"
+        )
+    return path
+
+
+def _adapter_max_rank(adapter_path: Path) -> int:
+    with (adapter_path / "adapter_config.json").open() as f:
+        cfg = json.load(f)
+
+    ranks = [int(cfg.get("r", 0) or 0)]
+    rank_pattern = cfg.get("rank_pattern") or {}
+    if isinstance(rank_pattern, dict):
+        ranks.extend(int(v) for v in rank_pattern.values() if v)
+    max_rank = max(ranks)
+    if max_rank <= 0:
+        config_path = adapter_path / "adapter_config.json"
+        raise ValueError(f"Could not determine LoRA rank from {config_path}")
+    return max_rank
+
+
+def _call_accepts_kwarg(callable_obj: Any, name: str) -> bool:
+    try:
+        signature = inspect.signature(callable_obj)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters or any(
+        p.kind == inspect.Parameter.VAR_KEYWORD
+        for p in signature.parameters.values()
+    )
 
 
 @dataclass
@@ -188,8 +240,9 @@ class _VLLMHandle(ModelHandle):
     in `SamplingParams`, sharing prefill KV.
     """
 
-    def __init__(self, llm: Any):
+    def __init__(self, llm: Any, lora_request: Any | None = None):
         self.llm = llm
+        self.lora_request = lora_request
         self.tokenizer = llm.get_tokenizer()
 
     def generate_batch(
@@ -222,8 +275,12 @@ class _VLLMHandle(ModelHandle):
                 sp_kwargs["top_k"] = sampling.top_k
         sp = SamplingParams(**sp_kwargs)
 
+        generate_kwargs: dict[str, Any] = {"use_tqdm": False}
+        if self.lora_request is not None:
+            generate_kwargs["lora_request"] = self.lora_request
+
         with Timer("generate.vllm"):
-            outputs = self.llm.generate(prompts, sp, use_tqdm=False)
+            outputs = self.llm.generate(prompts, sp, **generate_kwargs)
 
         results: list[GenerationOutput] = []
         for out in outputs:
@@ -233,10 +290,15 @@ class _VLLMHandle(ModelHandle):
         return results
 
 
-def _load_vllm(quant: str) -> ModelHandle:
+def _load_vllm(cfg: RunnerCfg) -> ModelHandle:
     from vllm import LLM
 
     os.environ.setdefault("CUDA_VISIBLE_DEVICES", GPU_ID)
+
+    adapter_path = resolve_adapter_path(cfg)
+    adapter_dir: Path | None = None
+    if adapter_path:
+        adapter_dir = _validate_adapter_path(adapter_path)
 
     common: dict[str, Any] = dict(
         model=MODEL_ID,
@@ -245,22 +307,35 @@ def _load_vllm(quant: str) -> ModelHandle:
         enable_prefix_caching=True,
         trust_remote_code=True,
     )
-    if quant == "bf16":
+    if adapter_dir is not None:
+        common["enable_lora"] = True
+        common["max_loras"] = 1
+        common["max_lora_rank"] = _adapter_max_rank(adapter_dir)
+
+    if cfg.quant == "bf16":
         common["dtype"] = "bfloat16"
-    elif quant == "bnb":
+    elif cfg.quant == "bnb":
         common["quantization"] = "bitsandbytes"
         common["load_format"] = "bitsandbytes"
+        if adapter_dir is not None and _call_accepts_kwarg(LLM, "qlora_adapter_name_or_path"):
+            common["qlora_adapter_name_or_path"] = str(adapter_dir)
     else:
-        raise ValueError(f"Unknown quant {quant!r} for vLLM; valid: 'bf16', 'bnb'")
+        raise ValueError(f"Unknown quant {cfg.quant!r} for vLLM; valid: 'bf16', 'bnb'")
 
     llm = LLM(**common)
-    return _VLLMHandle(llm=llm)
+    lora_request = None
+    if adapter_dir is not None:
+        from vllm.lora.request import LoRARequest
+
+        logger.info("Loading LoRA adapter with vLLM from %s", adapter_dir)
+        lora_request = LoRARequest(ADAPTER_NAME, ADAPTER_ID, str(adapter_dir))
+    return _VLLMHandle(llm=llm, lora_request=lora_request)
 
 
-def _load_hf(quant: str) -> ModelHandle:
-    if quant != "bnb":
+def _load_hf(cfg: RunnerCfg) -> ModelHandle:
+    if cfg.quant != "bnb":
         raise ValueError(
-            f"HF path only supports quant='bnb' in this codebase (got {quant!r}). "
+            f"HF path only supports quant='bnb' in this codebase (got {cfg.quant!r}). "
             "Use engine='vllm' for bf16."
         )
     import torch
@@ -283,11 +358,13 @@ def _load_hf(quant: str) -> ModelHandle:
         quantization_config=bnb_config,
         device_map="auto",
     )
-    if ADAPTER_PATH:
+    adapter_path = resolve_adapter_path(cfg)
+    if adapter_path:
         from peft import PeftModel
 
-        logger.info("Loading LoRA adapter from %s", ADAPTER_PATH)
-        model = PeftModel.from_pretrained(model, ADAPTER_PATH)
+        adapter_dir = _validate_adapter_path(adapter_path)
+        logger.info("Loading LoRA adapter from %s", adapter_dir)
+        model = PeftModel.from_pretrained(model, str(adapter_dir))
     model.eval()
     return _HFHandle(model=model, tokenizer=tokenizer)
 
@@ -302,15 +379,20 @@ def load_model(cfg: RunnerCfg) -> ModelHandle:
     with Timer("model.load"):
         if cfg.engine == "vllm":
             try:
-                return _load_vllm(cfg.quant)
+                return _load_vllm(cfg)
             except Exception as e:
                 logger.warning(
                     "vLLM load failed (%s: %s). Falling back to HF Transformers + bnb-4bit. "
                     "Requested quant=%r is being overridden to 'bnb' for the fallback path.",
                     type(e).__name__, e, cfg.quant,
                 )
-                return _load_hf("bnb")
+                fallback_cfg = RunnerCfg(
+                    engine="hf",
+                    quant="bnb",
+                    adapter_path=resolve_adapter_path(cfg),
+                )
+                return _load_hf(fallback_cfg)
         elif cfg.engine == "hf":
-            return _load_hf(cfg.quant)
+            return _load_hf(cfg)
         else:
             raise ValueError(f"Unknown engine {cfg.engine!r}; valid: 'vllm', 'hf'")

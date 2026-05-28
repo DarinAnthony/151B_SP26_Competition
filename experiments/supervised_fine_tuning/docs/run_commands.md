@@ -98,6 +98,24 @@ Final adapter will be written to:
 ## Eval After Training
 
 ```bash
+export WANDB_NAME=sft_numina10k_harder_sc_terse_4096_vllm
+
+python -m experiments.prompt_engineering.src.eval \
+  run=sc_terse_only \
+  eval.max_tokens=4096 \
+  runner.engine=vllm \
+  runner.quant=bf16 \
+  runner.adapter_path=/cephfs/qwen_math_comp/outputs/qwen3_4b_numina_10k_harder/final_adapter \
+  results_dir=/cephfs/qwen_math_comp/eval_results \
+  run_name=sft_numina10k_harder_sc_terse_4096_vllm
+```
+
+For the 20k run, change `runner.adapter_path`, `WANDB_NAME`, and `run_name`
+from `10k` to `20k`.
+
+On DataHub or any machine where vLLM fails, keep using the HF/BnB fallback:
+
+```bash
 export ADAPTER_PATH=/cephfs/qwen_math_comp/outputs/qwen3_4b_numina_10k_harder/final_adapter
 export WANDB_NAME=sft_numina10k_harder_sc_terse_4096_hf
 
@@ -109,6 +127,3 @@ python -m experiments.prompt_engineering.src.eval \
   results_dir=/cephfs/qwen_math_comp/eval_results \
   run_name=sft_numina10k_harder_sc_terse_4096_hf
 ```
-
-For the 20k run, change `ADAPTER_PATH`, `WANDB_NAME`, and `run_name` from
-`10k` to `20k`.
