@@ -26,7 +26,8 @@ from shared.telemetry import Timer
 
 logger = logging.getLogger(__name__)
 
-MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
+MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-4B-Thinking-2507")
+ADAPTER_PATH = os.environ.get("ADAPTER_PATH", "")
 MAX_MODEL_LEN = 16384
 GPU_ID = "0"
 MICRO_BATCH_SIZE = int(os.environ.get("RUNNER_MICRO_BATCH_SIZE", "25"))
@@ -242,6 +243,11 @@ def _load_hf(quant: str) -> ModelHandle:
         quantization_config=bnb_config,
         device_map="auto",
     )
+    if ADAPTER_PATH:
+        from peft import PeftModel
+
+        logger.info("Loading LoRA adapter from %s", ADAPTER_PATH)
+        model = PeftModel.from_pretrained(model, ADAPTER_PATH)
     model.eval()
     return _HFHandle(model=model, tokenizer=tokenizer)
 
