@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 
 MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-4B-Thinking-2507")
 ADAPTER_PATH = os.environ.get("ADAPTER_PATH", "")
-MAX_MODEL_LEN = 16384
+MAX_MODEL_LEN = int(os.environ.get("RUNNER_MAX_MODEL_LEN", "16384"))
 GPU_ID = "0"
 MICRO_BATCH_SIZE = int(os.environ.get("RUNNER_MICRO_BATCH_SIZE", "25"))
 PARALLEL_SAMPLES = os.environ.get("RUNNER_PARALLEL_SAMPLES", "0").lower() in {
