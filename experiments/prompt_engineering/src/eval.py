@@ -364,6 +364,7 @@ def _write_metrics_files(
 def _init_wandb(cfg: DictConfig, eval_cfg: EvalSliceCfg, runner_cfg: RunnerCfg, run_dir_name: str):
     project = os.environ.get("WANDB_PROJECT")
     if not project:
+        print("W&B logging disabled: WANDB_PROJECT is not set.")
         return None
     try:
         import wandb
@@ -397,6 +398,7 @@ def _init_wandb(cfg: DictConfig, eval_cfg: EvalSliceCfg, runner_cfg: RunnerCfg, 
             }
         ),
     )
+    print(f"W&B logging enabled: project={project}, run={run.name}, url={run.url}")
     return run
 
 
@@ -466,7 +468,9 @@ def _finish_wandb(wandb_run, rows: list[dict], metrics_dirs: list[Path]) -> None
             if path.exists():
                 artifact.add_file(str(path), name=f"{metrics_dir.name}/{name}")
     wandb_run.log_artifact(artifact)
+    print(f"W&B metrics artifact logged: {artifact.name}")
     wandb_run.finish()
+    print("W&B run finished.")
 
 
 # ─── Hydra entrypoint ────────────────────────────────────────────────────────
