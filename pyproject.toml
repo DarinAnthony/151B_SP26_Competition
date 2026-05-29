@@ -16,10 +16,13 @@ dependencies = [
     "sympy>=1.13",
     "numpy",
     # Inference
-    "transformers",
+    # transformers <5.0: 5.x removed `Qwen2Tokenizer.all_special_tokens_extended`,
+    # which vLLM's tokenizer cache still calls (breaks Qwen3 load).
+    # vllm <0.11: 0.11+ wheels link libcudart.so.13 (CUDA 13); Colab ships CUDA 12.x.
+    "transformers>=4.51,<5.0",
     "bitsandbytes",
     "torch",
-    "vllm>=0.6.6",
+    "vllm>=0.10,<0.11",
     "flashinfer-python",
     # Config + training infra
     "hydra-core>=1.3",
@@ -36,6 +39,9 @@ dependencies = [
 
 [project.optional-dependencies]
 notebook = ["ipykernel", "jupyter"]
+# GRPO RL track. trl >=0.17 guarantees GRPOConfig.vllm_mode (colocate/server split);
+# <0.20 caps API churn. Compatible with the transformers 4.x / vllm 0.10 pins above.
+rl = ["trl>=0.17,<0.20"]
 
 [tool.setuptools.packages.find]
 where = ["."]
