@@ -6,21 +6,27 @@ train_start_index: 100        # train on public.jsonl[100:] — disjoint from th
 max_train_samples: null       # null = use all rows from train_start_index onward
 
 # ── Rollout / group ────────────────────────────────────────────────────────
-num_generations: 4            # GRPO group size G (completions per prompt to compare)
+num_generations: 2            # GRPO group size G. Floored at 2 (the minimum for a
+                              # group-relative advantage) to keep the per-device logits
+                              # batch small enough to fit 8192-token completions — see
+                              # max_completion_length / per_device_train_batch_size below.
 max_prompt_length: 1024
-max_completion_length: 4096   # Qwen3-4B-Thinking emits long <think> traces, but the
-                              # GRPO logits tensor is [per_device_bs, prompt+completion,
-                              # vocab=151936] upcast to fp32 + its grad — at 8192 that's
-                              # ~74 GiB and OOMs an 80GB A100 alongside the colocate vLLM
-                              # engine. 4096 keeps peak ~41 GiB. Bump back up only if you
-                              # also cut per_device_train_batch_size/num_generations.
+max_completion_length: 8192   # Qwen3-4B-Thinking emits long <think> traces; give them room.
+                              # The GRPO logits tensor is [per_device_bs, prompt+completion,
+                              # vocab=151936] upcast to fp32 + its grad: at per_device_bs=4
+                              # this is ~74 GiB and OOMs an 80GB A100 beside the colocate
+                              # vLLM engine. We instead keep 8192 and halve the batch
+                              # (per_device_bs=2, G=2) → peak ~37 GiB.
 temperature: 1.0              # sampling REQUIRED — temp=0 collapses the group → zero advantage
 top_p: 1.0
 
 # ── RL / optimization ──────────────────────────────────────────────────────
 beta: 0.04                    # KL coefficient to the reference (base) policy
 learning_rate: 1.0e-6         # RL-low (not the 1e-4 SFT uses)
-per_device_train_batch_size: 4  # multiple of num_generations (divisibility constraint)
+per_device_train_batch_size: 2  # multiple of num_generations (divisibility constraint).
+                                # Halved 4→2 with G to fit 8192-token logits on 80GB.
+                                # prompts/step = (bs*grad_accum)/G = (2*4)/2 = 4 — same as
+                                # the old (4*4)/4, so effective batch is unchanged.
 gradient_accumulation_steps: 4
 max_steps: 50
 num_train_epochs: 1
@@ -32,10 +38,10 @@ gradient_checkpointing: true
 # ── vLLM rollout backend (colocate on a single GPU). Falls back to HF on error. ─
 use_vllm: true
 vllm_mode: colocate
-vllm_gpu_memory_utilization: 0.2   # colocate: leave more of the 80GB A100 for the
-                                   # training forward/backward (the logits chain peaks
-                                   # ~41 GiB at max_completion_length=4096). 0.2 still
-                                   # gives vLLM ~16 GiB → ~7 GiB KV cache, ample for G=4.
+vllm_gpu_memory_utilization: 0.2   # colocate: leave most of the 80GB A100 for the
+                                   # training forward/backward (logits chain peaks ~37 GiB
+                                   # at per_device_bs=2). 0.2 reserves ~16 GiB for vLLM
+                                   # (~7 GiB KV cache) → ~16 GiB headroom: 16+10+37 ≈ 63.
 
 # ── Logging ────────────────────────────────────────────────────────────────
 log_completions: true         # dump sample completions — invaluable for spotting reward hacking
