@@ -22,12 +22,14 @@ dependencies = [
     "transformers>=4.51,<5.0",
     "bitsandbytes",
     "torch",
-    # torchao >=0.15: Colab preinstalls a stale torchao 0.10.0 that lacks the
-    # config-class quant API (renamed from the old function API in 0.15) and trips
-    # runtime version gates. Capped <0.16 because 0.16+ drops torch 2.7.1 support
-    # (which vllm 0.10 pins) and only integrates with transformers 5.0 / vllm 0.13.
-    # 0.15.x covers torch 2.7.1/2.8.0/2.9.1 — the whole range these pins allow.
-    "torchao>=0.15,<0.16",
+    # torchao 0.16.x: peft 0.19's is_torchao_available() hard-requires torchao
+    # >=0.16 (raises ImportError otherwise) — Colab's preinstalled 0.10.0 trips it,
+    # and pip won't bump it unless we pin. Capped <0.17 because 0.17 drops torch
+    # 2.8.0 (which vllm 0.10.2 pulls); 0.16.x's python API covers torch 2.8.0/2.9/2.10.
+    # The "Skipping import of cpp extensions ... incompatible torch version" warning
+    # is benign: we do bf16 LoRA, not torchao-quantized kernels, so the C++ ops are
+    # never used — only the pure-python version gate needs to pass.
+    "torchao>=0.16,<0.17",
     "vllm>=0.10,<0.11",
     "flashinfer-python",
     # Config + training infra
