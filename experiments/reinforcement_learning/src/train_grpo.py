@@ -204,6 +204,26 @@ def build_grpo_config(cfg: DictConfig, output_dir: Path, use_vllm: bool):
     )
 
 
+def _ensure_distributed_env() -> None:
+    """Make vLLM colocate rollouts work under a plain `python -m` launch.
+
+    TRL's colocate path builds the vLLM engine with
+    `distributed_executor_backend="external_launcher"`, and that backend reads
+    `RANK` (+ `WORLD_SIZE`/`MASTER_ADDR`/`MASTER_PORT`/`LOCAL_RANK`) from the env and
+    needs a `torch.distributed` group. Under `python -m` (as the Colab notebook runs)
+    none are set, so vLLM raises `KeyError: 'RANK'` and we fall back to slow HF
+    generation. Populate the single-process values — byte-for-byte what
+    `torchrun --nproc_per_node=1` would set — so accelerate initialises a 1-rank group
+    and colocate works without a launcher. `setdefault` makes this a no-op under a real
+    torchrun/accelerate launch, which set these first.
+    """
+    os.environ.setdefault("RANK", "0")
+    os.environ.setdefault("LOCAL_RANK", "0")
+    os.environ.setdefault("WORLD_SIZE", "1")
+    os.environ.setdefault("MASTER_ADDR", "127.0.0.1")
+    os.environ.setdefault("MASTER_PORT", "29500")
+
+
 def _train_once(cfg: DictConfig, dataset, output_dir: Path, use_vllm: bool):
     """Build the model + trainer fresh and train. Fresh build per attempt keeps the
     vLLM→HF fallback clean (no double-wrapped LoRA from a half-built trainer)."""
@@ -238,6 +258,9 @@ def main(cfg: DictConfig) -> None:
         cfg.grpo.train_start_index,
         cfg.grpo.max_train_samples,
     )
+
+    if cfg.grpo.use_vllm:
+        _ensure_distributed_env()
 
     try:
         trainer, tokenizer = _train_once(cfg, dataset, output_dir, use_vllm=cfg.grpo.use_vllm)
