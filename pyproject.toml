@@ -22,6 +22,12 @@ dependencies = [
     "transformers>=4.51,<5.0",
     "bitsandbytes",
     "torch",
+    # torchao >=0.15: Colab preinstalls a stale torchao 0.10.0 that lacks the
+    # config-class quant API (renamed from the old function API in 0.15) and trips
+    # runtime version gates. Capped <0.16 because 0.16+ drops torch 2.7.1 support
+    # (which vllm 0.10 pins) and only integrates with transformers 5.0 / vllm 0.13.
+    # 0.15.x covers torch 2.7.1/2.8.0/2.9.1 — the whole range these pins allow.
+    "torchao>=0.15,<0.16",
     "vllm>=0.10,<0.11",
     "flashinfer-python",
     # Config + training infra
