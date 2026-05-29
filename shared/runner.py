@@ -29,16 +29,22 @@ from shared.telemetry import Timer
 
 logger = logging.getLogger(__name__)
 
+
+def _env_flag(name: str, default: bool = False) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    return raw.lower() in {"1", "true", "yes", "on"}
+
+
 MODEL_ID = os.environ.get("MODEL_ID", "Qwen/Qwen3-4B-Thinking-2507")
 ADAPTER_PATH = os.environ.get("ADAPTER_PATH", "")
 MAX_MODEL_LEN = int(os.environ.get("RUNNER_MAX_MODEL_LEN", "16384"))
 GPU_ID = "0"
 MICRO_BATCH_SIZE = int(os.environ.get("RUNNER_MICRO_BATCH_SIZE", "25"))
-PARALLEL_SAMPLES = os.environ.get("RUNNER_PARALLEL_SAMPLES", "0").lower() in {
-    "1",
-    "true",
-    "yes",
-}
+PARALLEL_SAMPLES = _env_flag("RUNNER_PARALLEL_SAMPLES")
+VLLM_USE_TQDM = _env_flag("RUNNER_VLLM_USE_TQDM", default=True)
+RUNNER_VERBOSE = _env_flag("RUNNER_VERBOSE", default=True)
 ADAPTER_NAME = "sft_adapter"
 ADAPTER_ID = 1
 
@@ -275,7 +281,14 @@ class _VLLMHandle(ModelHandle):
                 sp_kwargs["top_k"] = sampling.top_k
         sp = SamplingParams(**sp_kwargs)
 
-        generate_kwargs: dict[str, Any] = {"use_tqdm": False}
+        n_samples = max(1, sampling.n_samples)
+        if RUNNER_VERBOSE:
+            print(
+                f"vLLM generate: {len(prompts)} prompts x {n_samples} samples "
+                f"(max_tokens={max_tokens})"
+            )
+
+        generate_kwargs: dict[str, Any] = {"use_tqdm": VLLM_USE_TQDM}
         if self.lora_request is not None:
             generate_kwargs["lora_request"] = self.lora_request
 
@@ -287,6 +300,14 @@ class _VLLMHandle(ModelHandle):
             responses = [c.text for c in out.outputs]
             tokens = [len(c.token_ids) for c in out.outputs]
             results.append(GenerationOutput(responses=responses, n_response_tokens=tokens))
+        if RUNNER_VERBOSE:
+            total_sequences = sum(len(out.outputs) for out in outputs)
+            total_tokens = sum(sum(len(c.token_ids) for c in out.outputs) for out in outputs)
+            avg_tokens = total_tokens / total_sequences if total_sequences else 0.0
+            print(
+                f"vLLM generate done: {total_sequences} sequences, "
+                f"{total_tokens} output tokens, avg={avg_tokens:.0f}"
+            )
         return results
 
 

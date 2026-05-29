@@ -196,7 +196,11 @@ def make_training_args(args: argparse.Namespace, bf16: bool) -> Any:
         learning_rate=args.learning_rate,
         warmup_ratio=0.03,
         lr_scheduler_type="cosine",
+        logging_strategy="steps",
         logging_steps=args.logging_steps,
+        logging_first_step=True,
+        log_level="info",
+        disable_tqdm=False,
         eval_steps=args.eval_steps,
         save_strategy="steps",
         save_steps=args.save_steps,
@@ -239,6 +243,16 @@ def main() -> None:
 
     train_dataset = ChatSFTDataset(args.train_path, tokenizer, args.max_seq_len)
     eval_dataset = ChatSFTDataset(args.eval_path, tokenizer, args.max_seq_len)
+    effective_batch_size = args.per_device_train_batch_size * args.gradient_accumulation_steps
+    steps_per_epoch = (len(train_dataset) + effective_batch_size - 1) // effective_batch_size
+    planned_steps = args.max_steps if args.max_steps > 0 else int(steps_per_epoch * args.num_train_epochs)
+    print(
+        "Training plan: "
+        f"train_examples={len(train_dataset)}, eval_examples={len(eval_dataset)}, "
+        f"effective_batch_size={effective_batch_size}, steps_per_epoch={steps_per_epoch}, "
+        f"planned_steps={planned_steps}, logging_steps={args.logging_steps}, "
+        f"eval_steps={args.eval_steps}, save_steps={args.save_steps}"
+    )
 
     bnb_config = BitsAndBytesConfig(
         load_in_4bit=True,
