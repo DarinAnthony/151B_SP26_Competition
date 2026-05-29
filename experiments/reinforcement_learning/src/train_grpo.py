@@ -41,6 +41,12 @@ if str(_REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(_REPO_ROOT))
 os.environ.setdefault("REPO_ROOT", str(_REPO_ROOT))
 
+# vLLM colocate + the GRPO logits chain share one GPU; the large [B, L, vocab]
+# allocations fragment the caching allocator. Expandable segments lets freed blocks
+# be reused across differently-sized allocs, which cuts OOMs on the 80GB A100. Must
+# be set before torch initialises CUDA, hence module-load. setdefault → overridable.
+os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+
 from shared.io import load_jsonl  # noqa: E402
 from shared.prompt_format import build_chat_messages  # noqa: E402
 from shared.prompts import BASELINE_STARTER  # noqa: E402

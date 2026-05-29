@@ -8,7 +8,12 @@ max_train_samples: null       # null = use all rows from train_start_index onwar
 # ── Rollout / group ────────────────────────────────────────────────────────
 num_generations: 4            # GRPO group size G (completions per prompt to compare)
 max_prompt_length: 1024
-max_completion_length: 8192   # Qwen3-4B-Thinking emits long <think> traces; give them room
+max_completion_length: 4096   # Qwen3-4B-Thinking emits long <think> traces, but the
+                              # GRPO logits tensor is [per_device_bs, prompt+completion,
+                              # vocab=151936] upcast to fp32 + its grad — at 8192 that's
+                              # ~74 GiB and OOMs an 80GB A100 alongside the colocate vLLM
+                              # engine. 4096 keeps peak ~41 GiB. Bump back up only if you
+                              # also cut per_device_train_batch_size/num_generations.
 temperature: 1.0              # sampling REQUIRED — temp=0 collapses the group → zero advantage
 top_p: 1.0
 
@@ -27,7 +32,10 @@ gradient_checkpointing: true
 # ── vLLM rollout backend (colocate on a single GPU). Falls back to HF on error. ─
 use_vllm: true
 vllm_mode: colocate
-vllm_gpu_memory_utilization: 0.3
+vllm_gpu_memory_utilization: 0.2   # colocate: leave more of the 80GB A100 for the
+                                   # training forward/backward (the logits chain peaks
+                                   # ~41 GiB at max_completion_length=4096). 0.2 still
+                                   # gives vLLM ~16 GiB → ~7 GiB KV cache, ample for G=4.
 
 # ── Logging ────────────────────────────────────────────────────────────────
 log_completions: true         # dump sample completions — invaluable for spotting reward hacking
