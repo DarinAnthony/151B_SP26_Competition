@@ -8,15 +8,58 @@ system/user prompt tokens with -100.
 from __future__ import annotations
 
 import argparse
+import ctypes
 import inspect
 import json
+import os
 import re
+import site
+import sys
 from pathlib import Path
 from typing import Any
 
 
 MODEL_ID = "Qwen/Qwen3-4B-Thinking-2507"
 IGNORE_INDEX = -100
+
+
+def preload_cuda13_nvjitlink() -> None:
+    """Preload CUDA 13 nvJitLink when installed as a Python wheel."""
+    search_roots: list[Path] = []
+    for value in site.getsitepackages():
+        search_roots.append(Path(value))
+    user_site = site.getusersitepackages()
+    if user_site:
+        search_roots.append(Path(user_site))
+    for value in sys.path:
+        if value:
+            search_roots.append(Path(value))
+
+    candidates: list[Path] = []
+    for root in search_roots:
+        for rel in (
+            "nvidia/cu13/lib/libnvJitLink.so.13",
+            "nvidia/nvjitlink/lib/libnvJitLink.so.13",
+        ):
+            path = root / rel
+            if path.exists():
+                candidates.append(path)
+
+    if not candidates:
+        return
+
+    lib_path = candidates[0].resolve()
+    lib_dir = str(lib_path.parent)
+    existing = os.environ.get("LD_LIBRARY_PATH", "")
+    pieces = existing.split(":") if existing else []
+    if lib_dir not in pieces:
+        os.environ["LD_LIBRARY_PATH"] = ":".join([lib_dir] + pieces)
+
+    try:
+        ctypes.CDLL(str(lib_path), mode=getattr(ctypes, "RTLD_GLOBAL", 0))
+        print(f"Preloaded CUDA nvJitLink from {lib_path}")
+    except OSError as e:
+        print(f"Warning: found {lib_path} but could not preload it: {e}")
 
 
 class ChatSFTDataset:
@@ -224,6 +267,7 @@ def make_training_args(args: argparse.Namespace, bf16: bool) -> Any:
 
 def main() -> None:
     args = parse_args()
+    preload_cuda13_nvjitlink()
 
     import torch
     from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
