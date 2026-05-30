@@ -9,8 +9,10 @@ The whole loop is intentionally small and readable:
   2. For each prompt, TRL's `GRPOTrainer` samples a *group* of `num_generations`
      completions, scores each with the reward, and nudges the policy toward the
      above-average ones (GRPO = group-relative advantages, no learned critic).
-  3. The reward IS the eval scorer: `shared.scoring.score_one(...).correct` → 1.0/0.0.
-     Training and eval can therefore never disagree on what "correct" means.
+  3. The reward (see `reward.py`) is correctness + a small shaping term. Correctness
+     IS the eval scorer (`shared.scoring.score_one(...).correct` → 1.0/0.0), so training
+     and eval never disagree on "correct"; the shaping adds a bounded brevity/format/
+     truncation signal that keeps all-correct groups from collapsing to zero advantage.
 
 bf16 weights + a fresh LoRA adapter (or warm-started from an SFT adapter). Rollouts
 use vLLM by default and fall back to HF generation if vLLM is unavailable.
@@ -50,7 +52,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 from shared.io import load_jsonl  # noqa: E402
 from shared.prompt_format import build_chat_messages  # noqa: E402
 from shared.prompts import BASELINE_STARTER  # noqa: E402
-from shared.scoring import score_one  # noqa: E402
+
+from experiments.reinforcement_learning.src.reward import build_reward_funcs  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -95,39 +98,11 @@ def build_dataset(data_path: str, start_index: int, max_train_samples: int | Non
 
 
 # ─── Reward ──────────────────────────────────────────────────────────────────
-
-
-def _completion_text(completion) -> str:
-    """Pull assistant text out of a completion (conversational → list of messages)."""
-    if isinstance(completion, list):
-        if not completion:
-            return ""
-        last = completion[-1]
-        return last.get("content", "") if isinstance(last, dict) else str(last)
-    return completion or ""
-
-
-def correctness_reward(completions, answer_json, options_json, **kwargs) -> list[float]:
-    """1.0 if the completion's boxed answer is correct, else 0.0.
-
-    TRL passes every non-`prompt` dataset column through as a list aligned to
-    `completions`; `**kwargs` absorbs the rest (`prompts`, `id`, ...). Any
-    exception here would kill the training step, so scoring is fully guarded.
-    """
-    rewards: list[float] = []
-    for completion, ans_j, opt_j in zip(completions, answer_json, options_json):
-        text = _completion_text(completion)
-        try:
-            answer = json.loads(ans_j)
-            options = json.loads(opt_j)
-            item = {"answer": answer}
-            if options:  # truthy → MCQ; None/[] → free-form (mirrors score_one's dispatch)
-                item["options"] = options
-            correct = score_one(item, text).correct
-        except Exception:  # noqa: BLE001 — a raised reward aborts the whole step
-            correct = False
-        rewards.append(1.0 if correct else 0.0)
-    return rewards
+# The reward funcs live in `reward.py` (so they're unit-testable without TRL/GPU
+# — run `python -m experiments.reinforcement_learning.src.reward` for the
+# evaluation harness). `build_reward_funcs` returns a `[correctness, shaping]`
+# pair: pure 0/1 correctness plus a small brevity/format/truncation shaping term.
+# The shaping is what keeps all-correct groups from collapsing to zero advantage.
 
 
 # ─── Model + LoRA ──────────────────────────────────────────────────────────
@@ -237,9 +212,17 @@ def _train_once(cfg: DictConfig, dataset, output_dir: Path, use_vllm: bool):
 
     model, tokenizer, peft_config = load_model_and_lora(cfg)
     args = build_grpo_config(cfg, output_dir, use_vllm=use_vllm)
+    g = cfg.grpo
+    reward_funcs = build_reward_funcs(
+        max_completion_length=g.max_completion_length,
+        brevity_weight=g.reward_brevity_weight,
+        brevity_soft_len=g.reward_brevity_soft_len,  # null → defaults to max_completion_length
+        format_weight=g.reward_format_weight,
+        trunc_weight=g.reward_trunc_weight,
+    )
     trainer = GRPOTrainer(
         model=model,
-        reward_funcs=correctness_reward,
+        reward_funcs=reward_funcs,
         args=args,
         train_dataset=dataset,
         peft_config=peft_config,
