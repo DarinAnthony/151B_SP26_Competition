@@ -14,9 +14,13 @@ The key design choice: **the reward is the eval scorer.** Both call
 `shared/scoring.py::score_one`, so reward `1.0` ⇔ a completion that would be marked
 correct at eval. There is no proxy objective to drift from.
 
-- **Reward:** `1.0 if score_one(item, completion).correct else 0.0`. Correctness
-  only — explainable, directly aligned with scoring. (Shaping for early-`\boxed{}` /
-  brevity is a deliberate *later* lever, not in v1.)
+- **Reward:** `correctness(0/1) + shaping`, in `src/reward.py`. Correctness is
+  `score_one(...).correct` (the eval scorer). Shaping is a small, bounded term —
+  a brevity bonus on *correct* answers (decaying across the completion budget) plus
+  a format bonus / truncation penalty on *wrong* ones. Shaping was added after
+  `grpo_demo_v1` (see §3): correctness-only at `G=2` left most groups all-correct →
+  zero advantage → no learning. Run `python -m experiments.reinforcement_learning.src.reward`
+  for the reward distribution + group-signal evaluation.
 - **Init:** base `Qwen/Qwen3-4B-Thinking-2507` by default; `model.init_adapter_path`
   warm-starts from an SFT adapter once one exists (the README's recommended path).
 - **No leakage:** train on `public.jsonl[100:]`, evaluate on `slice=default`
@@ -64,22 +68,52 @@ _Eval slice: first 100 of `data/public.jsonl`, greedy._
 | Run | Init | Steps | Overall | MCQ | Free-form |
 |---|---|---|---|---|---|
 | baseline (base model) | — | — | _TBD_ | _TBD_ | _TBD_ |
-| grpo_demo_v1 | base | 50 | _TBD_ | _TBD_ | _TBD_ |
+| grpo_demo_v1 | base | 50 | _no real learning — see below_ | | |
+| grpo_demo_v2 (G=4 + shaping) | base | 50 | _TBD_ | _TBD_ | _TBD_ |
 
 (Fill in after running steps 1–3 above on the A100.)
 
+### grpo_demo_v1 post-mortem (the run that didn't learn)
+
+The 50-step run completed but the policy barely moved. Two coupled causes, both
+visible in the `log_completions` reward/advantage table:
+
+1. **Zero-advantage collapse.** `num_generations=2` is the statistical worst case:
+   a 2-member group only carries gradient when it splits correct/incorrect. The base
+   model already solves most of these problems, so the dominant group outcome was
+   `{1,1}` → `std=0` → advantage `0.00` → no update. A large fraction of the logged
+   groups show advantage exactly `0.00`.
+2. **Truncation = false negatives.** Qwen3-Thinking rambled (`"Wait, wait, wait…"`
+   loops) into the 4096-token cap and got cut off with no `\boxed{}` → scored `0`,
+   indistinguishable from a confident wrong answer. (Teacher reference traces are
+   ~130 tokens median; rollouts were 10–30× longer.)
+
+**Fixes shipped:** (A) `G=2→4`, `completion 4096→3072`, `bs 2→4`, `ga 4→2`,
+`vllm_util 0.3→0.25`. (B) reward shaping in `src/reward.py`. The shaping is the
+bigger lever — its brevity term gives even all-correct groups non-zero variance.
+The `reward.py` evaluation harness, run over the 1126 real teacher traces + synthetic
+rollout failure modes, quantifies it: at ~85% model accuracy the fraction of groups
+with non-zero advantage goes **25% → 98% at G=2**, and **48% → 100% at G=4**.
+
 ## 4. Open questions / next steps
 
-- **Run the baseline + demo on A100** and populate the table.
-- **`max_completion_length=8192`:** generous for the thinking trace; if the curve is
-  starved by truncation (completions cut before `\boxed{}` → reward 0), raise it; if
-  rollouts are too slow / OOM, lower it or drop `num_generations`.
-- **Reward sparsity:** binary reward gives zero advantage on all-wrong (or all-right)
-  groups. If signal is weak, raise `num_generations`, or curriculum the easier
-  (MCQ-heavy) rows first — *without* changing the reward.
+- **Run the baseline + `grpo_demo_v2` on A100** and populate the table — confirm the
+  G=4 + shaping changes turn into real eval movement (the whole point of the rewrite).
+- **Watch the new diagnostics in `log_completions`:** `reward/correctness` (the honest
+  accuracy signal, undistorted by shaping) and `reward/shaping` should both be logged.
+  Healthy = `correctness` trending up and mean completion length trending *down*. If
+  `shaping` dominates `correctness`, lower `reward_brevity_weight`.
+- **Memory:** G=4/3072 peaks ~40 GiB + ~20 GiB vLLM. If it OOMs, drop
+  `grpo.max_completion_length=2560` (the vLLM→HF fallback also catches an OOM and
+  retries on the slow path).
+- ~~**Reward sparsity** / zero advantage on all-right groups~~ — addressed by the
+  shaping reward (see §3). Revisit `num_generations` higher (8) if signal is still thin.
+- **MCQ brevity-hack watch:** brevity is gated on *correct*, so short-wrong gains
+  nothing, but on MCQ a correct 1-token `\boxed{F}` guess still earns full brevity.
+  The math (gating + `weight 0.3 < 1`) makes guess-then-stop unprofitable vs.
+  reason-then-answer, but verify MCQ reasoning length doesn't crater via `log_completions`.
 - **Reward-hacking watch:** `score_one`'s MCQ path accepts a bare trailing capital
-  letter even without `\boxed{}`. Watch MCQ vs free-form reward separately via
-  `log_completions`; tighten `beta` if the policy drifts to degenerate outputs.
+  letter even without `\boxed{}`. Watch MCQ vs free-form reward separately; tighten
+  `beta` if the policy drifts to degenerate outputs.
 - **Warm-start from SFT** (`model.init_adapter_path=<sft adapter>`) once the SFT track
   has a checkpoint that beats the prompt baseline — the README's gating condition.
-- **Shaping reward** (early-`\boxed{}` / length) as a follow-up if correctness-only stalls.

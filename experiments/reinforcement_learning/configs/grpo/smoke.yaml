@@ -24,6 +24,12 @@ lr_scheduler_type: constant
 bf16: true
 gradient_checkpointing: true
 
+# ── Reward shaping (see reward.py; same knobs as demo) ──────────────────────
+reward_brevity_weight: 0.3
+reward_brevity_soft_len: null   # null → = max_completion_length
+reward_format_weight: 0.1
+reward_trunc_weight: 0.1
+
 # ── Rollout backend: HF (no vLLM engine to spin up) ─────────────────────────
 use_vllm: false
 vllm_mode: colocate
